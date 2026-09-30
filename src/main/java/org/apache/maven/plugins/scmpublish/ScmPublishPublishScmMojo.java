@@ -18,8 +18,6 @@
  */
 package org.apache.maven.plugins.scmpublish;
 
-import javax.inject.Inject;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
@@ -40,13 +38,11 @@ import java.util.Set;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.filefilter.NameFileFilter;
 import org.apache.commons.io.filefilter.NotFileFilter;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.MojoFailureException;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.project.MavenProject;
-import org.apache.maven.scm.manager.ScmManager;
-import org.apache.maven.shared.release.scm.ScmRepositoryConfigurator;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.Mojo;
+import org.apache.maven.api.plugin.annotations.Parameter;
 import org.apache.maven.shared.utils.logging.MessageUtils;
 import org.codehaus.plexus.util.MatchPatterns;
 
@@ -56,7 +52,7 @@ import org.codehaus.plexus.util.MatchPatterns;
  * Can also be used without a Maven project, so usable to update any SCM with any content.
  * @see <a href="https://maven.apache.org/scm/index.html">Maven SCM</a>
  */
-@Mojo(name = "publish-scm", aggregator = true, requiresProject = false)
+@Mojo(name = "publish-scm", aggregator = true, projectRequired = false)
 public class ScmPublishPublishScmMojo extends AbstractScmPublishMojo {
     /**
      * The path of the directory containing the content to be published.
@@ -65,8 +61,8 @@ public class ScmPublishPublishScmMojo extends AbstractScmPublishMojo {
     @Parameter(property = "scmpublish.content", defaultValue = "${project.build.directory}/staging")
     private File content;
 
-    @Parameter(defaultValue = "${project}", readonly = true, required = true)
-    protected MavenProject project;
+    @Inject
+    protected Project project;
 
     private List<File> deleted = new ArrayList<>();
 
@@ -77,11 +73,6 @@ public class ScmPublishPublishScmMojo extends AbstractScmPublishMojo {
     private int directories = 0;
     private int files = 0;
     private long size = 0;
-
-    @Inject
-    public ScmPublishPublishScmMojo(ScmManager scmManager, ScmRepositoryConfigurator scmRepositoryConfigurator) {
-        super(scmManager, scmRepositoryConfigurator);
-    }
 
     /**
      * Update SCM checkout directory with content.
@@ -217,18 +208,18 @@ public class ScmPublishPublishScmMojo extends AbstractScmPublishMojo {
         }
     }
 
-    public void scmPublishExecute() throws MojoExecutionException, MojoFailureException {
+    public void scmPublishExecute() throws MojoException {
         if (siteOutputEncoding == null) {
             getLog().warn("No output encoding, defaulting to UTF-8.");
             siteOutputEncoding = "utf-8";
         }
 
         if (!content.exists()) {
-            throw new MojoExecutionException("Configured content directory does not exist: " + content);
+            throw new MojoException("Configured content directory does not exist: " + content);
         }
 
         if (!content.canRead()) {
-            throw new MojoExecutionException("Can't read content directory: " + content);
+            throw new MojoException("Can't read content directory: " + content);
         }
 
         checkoutExisting();
@@ -268,7 +259,7 @@ public class ScmPublishPublishScmMojo extends AbstractScmPublishMojo {
                     files,
                     displaySize);
         } catch (IOException ioe) {
-            throw new MojoExecutionException("Could not copy content to SCM checkout", ioe);
+            throw new MojoException("Could not copy content to SCM checkout", ioe);
         }
 
         logInfo(
