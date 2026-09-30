@@ -33,10 +33,15 @@ import java.util.TreeSet;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.time.DurationFormatUtils;
-import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.MojoFailureException;
-import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.plugin.Log;
+import org.apache.maven.api.plugin.Mojo;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.Parameter;
+import org.apache.maven.api.services.Prompter;
+import org.apache.maven.api.settings.Server;
+import org.apache.maven.api.settings.Settings;
 import org.apache.maven.scm.CommandParameter;
 import org.apache.maven.scm.CommandParameters;
 import org.apache.maven.scm.ScmBranch;
@@ -48,21 +53,19 @@ import org.apache.maven.scm.command.checkin.CheckInScmResult;
 import org.apache.maven.scm.manager.NoSuchScmProviderException;
 import org.apache.maven.scm.manager.ScmManager;
 import org.apache.maven.scm.provider.ScmProvider;
+import org.apache.maven.scm.provider.ScmProviderRepository;
+import org.apache.maven.scm.provider.ScmProviderRepositoryWithHost;
 import org.apache.maven.scm.provider.ScmUrlUtils;
 import org.apache.maven.scm.provider.svn.AbstractSvnScmProvider;
 import org.apache.maven.scm.provider.svn.repository.SvnScmProviderRepository;
 import org.apache.maven.scm.repository.ScmRepository;
 import org.apache.maven.scm.repository.ScmRepositoryException;
-import org.apache.maven.settings.Settings;
-import org.apache.maven.shared.release.config.ReleaseDescriptor;
-import org.apache.maven.shared.release.config.ReleaseDescriptorBuilder;
-import org.apache.maven.shared.release.scm.ScmRepositoryConfigurator;
 import org.apache.maven.shared.utils.logging.MessageUtils;
 
 /**
  * Base class for the scm-publish mojos.
  */
-public abstract class AbstractScmPublishMojo extends AbstractMojo {
+public abstract class AbstractScmPublishMojo implements Mojo {
     // CHECKSTYLE_OFF: LineLength
     /**
      * URL of the target SCM repository to publish to in format
@@ -76,7 +79,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
     // CHECKSTYLE_ON: LineLength
     @Parameter(
             property = "scmpublish.pubScmUrl",
-            defaultValue = "${project.distributionManagement.site.url}",
+            defaultValue = "${project.model.distributionManagement.site.url}",
             required = true)
     protected String pubScmUrl;
 
@@ -145,7 +148,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
     /**
      * SCM log/checkin comment for this publication.
      */
-    @Parameter(property = "scmpublish.checkinComment", defaultValue = "Site checkin for project ${project.name}")
+    @Parameter(property = "scmpublish.checkinComment", defaultValue = "Site checkin for project ${project.model.name}")
     private String checkinComment;
 
     /**
@@ -162,7 +165,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
      * The server id specified in the {@code settings.xml}, which should be used for the authentication.
      * @see <a href="https://maven.apache.org/settings.html#servers">Settings Reference</a>
      */
-    @Parameter(property = "scmpublish.serverId", defaultValue = "${project.distributionManagement.site.id}")
+    @Parameter(property = "scmpublish.serverId", defaultValue = "${project.model.distributionManagement.site.id}")
     private String serverId;
 
     /**
@@ -214,10 +217,14 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
     @Parameter(defaultValue = "${basedir}", readonly = true)
     protected File basedir;
 
-    /**
-     */
-    @Parameter(defaultValue = "${settings}", readonly = true, required = true)
-    protected Settings settings;
+    @Inject
+    protected Log log;
+
+    @Inject
+    protected Session session;
+
+    @Inject
+    private Prompter prompter;
 
     /**
      * Collections of path patterns specifying files/directories which should never be deleted by this goal.
@@ -271,16 +278,10 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
     /**
      * The SCM manager.
      */
-    private final ScmManager scmManager;
+    private ScmManager scmManager;
 
-    /**
-     * Tool that gets a configured SCM repository from release configuration.
-     */
-    protected final ScmRepositoryConfigurator scmRepositoryConfigurator;
-
-    protected AbstractScmPublishMojo(ScmManager scmManager, ScmRepositoryConfigurator scmRepositoryConfigurator) {
-        this.scmManager = scmManager;
-        this.scmRepositoryConfigurator = scmRepositoryConfigurator;
+    protected Log getLog() {
+        return log;
     }
 
     protected void logInfo(String format, Object... params) {
@@ -310,35 +311,27 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
         return FilenameUtils.isExtension(f.getName(), normalizeExtensions);
     }
 
-    private void setupScm() throws ScmRepositoryException, NoSuchScmProviderException {
-        String scmUrl;
+    private void setupScm() throws ScmRepositoryException, NoSuchScmProviderException, MojoException {
         if (localCheckout) {
             // in the release phase we have to change the checkout URL
             // to do a local checkout instead of going over the network.
-
             String provider = ScmUrlUtils.getProvider(pubScmUrl);
             String delimiter = ScmUrlUtils.getDelimiter(pubScmUrl);
-
             String providerPart = "scm:" + provider + delimiter;
 
             // X TODO: also check the information from releaseDescriptor.getScmRelativePathProjectDirectory()
             // X TODO: in case our toplevel git directory has no pom.
             // X TODO: fix pathname once I understand this.
-            scmUrl = providerPart + "file://" + "target/localCheckout";
+            String scmUrl = providerPart + "file://" + "target/localCheckout";
             logInfo("Performing a LOCAL checkout from " + scmUrl);
         }
 
-        ReleaseDescriptorBuilder descriptorBuilder = new ReleaseDescriptorBuilder();
-        descriptorBuilder.setInteractive(settings.isInteractiveMode());
+        try {
+            scmManager = ScmManagerFactory.create(getClass().getClassLoader(), prompter, getLog());
+        } catch (IOException e) {
+            throw new MojoException("Unable to register the SCM providers: " + e.getMessage(), e);
+        }
 
-        descriptorBuilder.setScmPassword(password);
-        descriptorBuilder.setScmUsername(username);
-        // used for lookup of credentials from settings.xml in DefaultScmRepositoryConfigurator
-        descriptorBuilder.setScmId(serverId);
-        descriptorBuilder.setWorkingDirectory(basedir.getAbsolutePath());
-        descriptorBuilder.setLocalCheckout(localCheckout);
-        descriptorBuilder.setScmSourceUrl(pubScmUrl);
-        descriptorBuilder.setPushChanges(pushChanges);
         if (providerImplementations != null) {
             for (Map.Entry<String, String> providerEntry : providerImplementations.entrySet()) {
                 logInfo(
@@ -348,14 +341,100 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
             }
         }
 
-        ReleaseDescriptor releaseDescriptor = descriptorBuilder.build();
-        scmRepository = scmRepositoryConfigurator.getConfiguredRepository(releaseDescriptor, settings);
+        Settings settings = session.getSettings();
+        scmRepository = getConfiguredRepository(settings);
+
         // set pushChanges afterwards due to https://issues.apache.org/jira/browse/MRELEASE-1160
         scmRepository.getProviderRepository().setPushChanges(pushChanges);
-        scmProvider = scmRepositoryConfigurator.getRepositoryProvider(scmRepository);
+
+        scmProvider = scmManager.getProviderByRepository(scmRepository);
     }
 
-    protected void checkoutExisting() throws MojoExecutionException {
+    /**
+     * Creates the repository for {@link #pubScmUrl}, taking the credentials from the parameters, then from the server
+     * {@link #serverId} of the settings (which Maven 4 hands over already decrypted).
+     */
+    private ScmRepository getConfiguredRepository(Settings settings)
+            throws ScmRepositoryException, NoSuchScmProviderException {
+        String user = username;
+        String pass = password;
+        String privateKey = null;
+        String passphrase = null;
+
+        ScmRepository repository = scmManager.makeScmRepository(pubScmUrl);
+        ScmProviderRepository providerRepository = repository.getProviderRepository();
+
+        // MRELEASE-76
+        providerRepository.setPersistCheckout(false);
+
+        Server server = null;
+        if (serverId != null) {
+            server = findServer(settings, serverId);
+            if (server == null) {
+                getLog().warn("No server with id '" + serverId + "' found in Maven settings");
+            }
+        }
+
+        if (server == null && providerRepository instanceof ScmProviderRepositoryWithHost) {
+            ScmProviderRepositoryWithHost repositoryWithHost = (ScmProviderRepositoryWithHost) providerRepository;
+            String host = repositoryWithHost.getHost();
+            int port = repositoryWithHost.getPort();
+            if (port > 0) {
+                host += ":" + port;
+            }
+            // TODO: this is a bit dodgy - id is not host, but since we don't have a <host> field we make an assumption
+            server = findServer(settings, host);
+        }
+
+        if (server != null) {
+            if (user == null && server.getUsername() != null) {
+                getLog().debug("Using username from server id '" + serverId + "' found in Maven settings");
+                user = server.getUsername();
+            }
+            if (pass == null && server.getPassword() != null) {
+                getLog().debug("Using password from server id '" + serverId + "' found in Maven settings");
+                pass = server.getPassword();
+            }
+            if (server.getPrivateKey() != null) {
+                getLog().debug("Using private key from server id '" + serverId + "' found in Maven settings");
+                privateKey = server.getPrivateKey();
+            }
+            if (server.getPassphrase() != null) {
+                getLog().debug("Using passphrase from server id '" + serverId + "' found in Maven settings");
+                passphrase = server.getPassphrase();
+            }
+        }
+
+        if (user != null && !user.isEmpty()) {
+            providerRepository.setUser(user);
+        }
+        if (pass != null && !pass.isEmpty()) {
+            providerRepository.setPassword(pass);
+        }
+        if (providerRepository instanceof ScmProviderRepositoryWithHost) {
+            ScmProviderRepositoryWithHost repositoryWithHost = (ScmProviderRepositoryWithHost) providerRepository;
+            if (privateKey != null && !privateKey.isEmpty()) {
+                repositoryWithHost.setPrivateKey(privateKey);
+            }
+            if (passphrase != null && !passphrase.isEmpty()) {
+                repositoryWithHost.setPassphrase(passphrase);
+            }
+        }
+
+        if (!settings.isInteractiveMode()) {
+            scmManager.getProviderByRepository(repository).setInteractive(false);
+        }
+        return repository;
+    }
+
+    private static Server findServer(Settings settings, String id) {
+        return settings.getServers().stream()
+                .filter(s -> id.equals(s.getId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    protected void checkoutExisting() throws MojoException {
 
         if (scmProvider instanceof AbstractSvnScmProvider) {
             checkCreateRemoteSvnPath();
@@ -375,7 +454,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
             } catch (IOException e) {
                 logError(e.getMessage());
 
-                throw new MojoExecutionException("Unable to remove old checkout directory: " + e.getMessage(), e);
+                throw new MojoException("Unable to remove old checkout directory: " + e.getMessage(), e);
             }
         }
 
@@ -423,11 +502,11 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
         } catch (ScmException | IOException e) {
             logError(e.getMessage());
 
-            throw new MojoExecutionException("An error occurred during the checkout process: " + e.getMessage(), e);
+            throw new MojoException("An error occurred during the checkout process: " + e.getMessage(), e);
         }
     }
 
-    private void checkCreateRemoteSvnPath() throws MojoExecutionException {
+    private void checkCreateRemoteSvnPath() throws MojoException {
         getLog().debug("AbstractSvnScmProvider used, so we can check if remote url exists and eventually create it.");
         AbstractSvnScmProvider svnScmProvider = (AbstractSvnScmProvider) scmProvider;
 
@@ -438,7 +517,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
                 return;
             }
         } catch (ScmException e) {
-            throw new MojoExecutionException(e.getMessage(), e);
+            throw new MojoException(e.getMessage(), e);
         }
 
         String remoteUrl = ((SvnScmProviderRepository) scmRepository.getProviderRepository()).getUrl();
@@ -470,29 +549,29 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
                 FileUtils.deleteDirectory(checkoutDirectory);
             }
         } catch (IOException | ScmException e) {
-            throw new MojoExecutionException(e.getMessage(), e);
+            throw new MojoException(e.getMessage(), e);
         } finally {
             if (baseDir != null) {
                 try {
                     FileUtils.forceDeleteOnExit(baseDir);
                 } catch (IOException e) {
-                    throw new MojoExecutionException(e.getMessage(), e);
+                    throw new MojoException(e.getMessage(), e);
                 }
             }
         }
     }
 
-    public void execute() throws MojoExecutionException, MojoFailureException {
+    @Override
+    public void execute() throws MojoException {
         if (skipDeployment || skipDeployement) {
             getLog().info("scmpublish.skipDeploy = true: Skipping site deployment");
             return;
         }
 
-        // setup the scm plugin with help from release plugin utilities
         try {
             setupScm();
         } catch (ScmRepositoryException | NoSuchScmProviderException e) {
-            throw new MojoExecutionException(e.getMessage(), e);
+            throw new MojoException(e.getMessage(), e);
         }
 
         boolean tmpCheckout = false;
@@ -503,7 +582,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
                 checkoutDirectory = Files.createTempDirectory("maven-scm-publish" + ".checkout")
                         .toFile();
             } catch (IOException ioe) {
-                throw new MojoExecutionException(ioe.getMessage(), ioe);
+                throw new MojoException(ioe.getMessage(), ioe);
             }
         }
 
@@ -519,9 +598,9 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
     /**
      * Check-in content from scm checkout.
      *
-     * @throws MojoExecutionException in case of issue
+     * @throws MojoException in case of issue
      */
-    protected void checkinFiles() throws MojoExecutionException {
+    protected void checkinFiles() throws MojoException {
         if (skipCheckin) {
             return;
         }
@@ -540,11 +619,11 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
                     checkinResult.getScmRevision(),
                     DurationFormatUtils.formatPeriod(start, System.currentTimeMillis(), "H' h 'm' m 's' s'"));
         } catch (ScmException e) {
-            throw new MojoExecutionException("Failed to perform SCM checkin", e);
+            throw new MojoException("Failed to perform SCM checkin", e);
         }
     }
 
-    protected void deleteFiles(Collection<File> deleted) throws MojoExecutionException {
+    protected void deleteFiles(Collection<File> deleted) throws MojoException {
         if (skipDeletedFiles) {
             logInfo("Deleting files is skipped.");
             return;
@@ -561,7 +640,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
                     scmProvider.remove(scmRepository, deletedFileSet, "Deleting obsolete site files."),
                     "delete files from SCM");
         } catch (ScmException e) {
-            throw new MojoExecutionException("Failed to delete removed files to SCM", e);
+            throw new MojoException("Failed to delete removed files to SCM", e);
         }
     }
 
@@ -569,10 +648,9 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
      * Add files to scm.
      *
      * @param added files to be added
-     * @throws MojoFailureException in case of issue
-     * @throws MojoExecutionException in case of issue
+     * @throws MojoException in case of issue
      */
-    protected void addFiles(Collection<File> added) throws MojoFailureException, MojoExecutionException {
+    protected void addFiles(Collection<File> added) throws MojoException {
         List<File> addedList = new ArrayList<>();
         Set<File> createdDirs = new HashSet<>();
         Set<File> dirsToAdd = new TreeSet<>();
@@ -631,15 +709,15 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
             commandParameters.setString(CommandParameter.FORCE_ADD, Boolean.TRUE.toString());
             checkScmResult(scmProvider.add(scmRepository, addedFileSet, commandParameters), "add new files to SCM");
         } catch (ScmException e) {
-            throw new MojoExecutionException("Failed to add new files to SCM", e);
+            throw new MojoException("Failed to add new files to SCM", e);
         }
     }
 
-    private <T extends ScmResult> T checkScmResult(T result, String failure) throws MojoExecutionException {
+    private <T extends ScmResult> T checkScmResult(T result, String failure) throws MojoException {
         if (!result.isSuccess()) {
             String msg = "Failed to " + failure + ": " + result.getProviderMessage() + " " + result.getCommandOutput();
             logError(msg);
-            throw new MojoExecutionException(msg);
+            throw new MojoException(msg);
         }
         return result;
     }
@@ -648,7 +726,7 @@ public abstract class AbstractScmPublishMojo extends AbstractMojo {
         return dryRun;
     }
 
-    public abstract void scmPublishExecute() throws MojoExecutionException, MojoFailureException;
+    public abstract void scmPublishExecute() throws MojoException;
 
     public void setPubScmUrl(String pubScmUrl) {
         // Fix required for Windows, which fit other OS as well

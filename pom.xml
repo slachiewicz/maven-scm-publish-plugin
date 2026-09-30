@@ -28,7 +28,7 @@ under the License.
   </parent>
 
   <artifactId>maven-scm-publish-plugin</artifactId>
-  <version>3.3.1-SNAPSHOT</version>
+  <version>4.0.0-beta-1-SNAPSHOT</version>
   <packaging>maven-plugin</packaging>
 
   <name>Apache Maven SCM Publish Plugin</name>
@@ -40,7 +40,7 @@ under the License.
   </contributors>
 
   <prerequisites>
-    <maven>3.6.3</maven>
+    <maven>${mavenVersion}</maven>
   </prerequisites>
 
   <scm>
@@ -65,10 +65,10 @@ under the License.
   </distributionManagement>
 
   <properties>
-    <javaVersion>8</javaVersion>
-    <mavenVersion>3.9.16</mavenVersion>
+    <javaVersion>17</javaVersion>
+    <mavenVersion>4.0.0-rc-7</mavenVersion>
+    <version.maven-plugin-tools>4.0.0-beta-3</version.maven-plugin-tools>
     <scmVersion>2.2.1</scmVersion>
-    <releasePluginVersion>${version.maven-release-plugin}</releasePluginVersion>
     <sitePluginVersion>${version.maven-site-plugin}</sitePluginVersion>
     <antrunPluginVersion>${version.maven-antrun-plugin}</antrunPluginVersion>
     <projectInfoReportsPluginVersion>${version.maven-project-info-reports-plugin}</projectInfoReportsPluginVersion>
@@ -78,43 +78,33 @@ under the License.
 
   <dependencies>
     <dependency>
-      <groupId>org.apache.maven.release</groupId>
-      <artifactId>maven-release-api</artifactId>
-      <version>${releasePluginVersion}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.maven.release</groupId>
-      <artifactId>maven-release-manager</artifactId>
-      <version>${releasePluginVersion}</version>
-    </dependency>
-    <dependency>
       <groupId>org.apache.maven</groupId>
-      <artifactId>maven-model</artifactId>
+      <artifactId>maven-api-core</artifactId>
       <version>${mavenVersion}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>
-      <artifactId>maven-core</artifactId>
+      <artifactId>maven-api-di</artifactId>
       <version>${mavenVersion}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>
-      <artifactId>maven-settings</artifactId>
+      <artifactId>maven-api-model</artifactId>
       <version>${mavenVersion}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>
-      <artifactId>maven-plugin-api</artifactId>
+      <artifactId>maven-api-settings</artifactId>
       <version>${mavenVersion}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>org.apache.maven.plugin-tools</groupId>
-      <artifactId>maven-plugin-annotations</artifactId>
-      <version>${version.maven-plugin-tools}</version>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-api-annotations</artifactId>
+      <version>${mavenVersion}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -145,7 +135,11 @@ under the License.
       <groupId>javax.inject</groupId>
       <artifactId>javax.inject</artifactId>
       <version>1</version>
-      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.codehaus.plexus</groupId>
+      <artifactId>plexus-interactivity-api</artifactId>
+      <version>1.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.maven.scm</groupId>
